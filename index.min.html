@@ -1,0 +1,239 @@
+<!doctypehtml><html lang=en><meta charset=utf-8><meta content="width=device-width,initial-scale=1"name=viewport><title>WebRTC Meet</title><link href=https://www.gstatic.com/meet/icons/favicon-2026-v2.png rel=icon type=image/x-icon><style>*{box-sizing:border-box}body{margin:0;background:#202124;color:#e8eaed;font:14px Arial,sans-serif;min-height:100vh}footer,header{display:flex;align-items:center;justify-content:space-between;padding:16px 24px}header{color:#bdc1c6}header strong{color:#e8eaed;font-size:18px}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;padding:8px 24px;height:calc(100vh - 132px)}.stage{min-height:280px;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;background:#18191b;border-radius:12px}.video-box{position:relative;overflow:hidden;border-radius:10px;background:#303134;display:grid;place-items:center}video{width:100%;height:100%;object-fit:cover}.video-label{position:absolute;left:12px;bottom:12px;padding:7px 10px;border-radius:6px;background:#202124bb;z-index:1}.placeholder{color:#bdc1c6}aside{padding:18px;border-radius:12px;background:#292a2d;overflow:auto}h2{font-size:18px;margin:0 0 8px}p{color:#bdc1c6;line-height:1.45}label{display:block;margin:16px 0 6px;color:#e8eaed}textarea{width:100%;min-height:112px;resize:vertical;padding:10px;border:1px solid #5f6368;border-radius:8px;background:#202124;color:#e8eaed;font:12px monospace}button{border:0;border-radius:22px;padding:11px 16px;margin:4px 4px 4px 0;background:#3c4043;color:#fff;cursor:pointer}button.primary{background:#8ab4f8;color:#202124}button.danger{background:#ea4335}button:disabled{opacity:.45;cursor:not-allowed}.status{min-height:20px;color:#8ab4f8}footer{justify-content:center;gap:8px;flex-wrap:wrap}@media (max-width:800px){main{grid-template-columns:1fr;height:auto;padding:8px 12px}.stage{min-height:55vh}footer,header{padding-left:12px;padding-right:12px}}</style><header><strong>WebRTC Meet</strong><span>Chill with people... I guess</span></header><main><section class=stage><div class=video-box><span class=video-label>You</span><span class=placeholder id=localPlaceholder>Camera preview</span></div><div class=video-box><span class=video-label>Other person</span><span class=placeholder id=remotePlaceholder>Waiting for peer…</span></div></section><aside><h2>Connect with copyable codes</h2><p>One person creates an offer and sends it to the other. The other person pastes it, creates an answer, and sends that back. The first person pastes the answer. Both people should keep this page open.</p><button id=startCamera class=primary>1. Start camera</button><button id=createOffer>2. Create offer</button><label for=localCode>Your code (copy and send to the other person)</label><textarea id=localCode placeholder="Your offer or answer appears here"readonly></textarea><button id=copyCode>Copy your code</button><label for=remoteCode>Code from the other person</label><textarea id=remoteCode placeholder="Paste their offer or answer here"></textarea><button id=acceptCode class=primary>Accept pasted code</button><button id=createAnswer>Create answer</button><div class=status id=status>Not connected</div></aside></main><footer><button id=micButton disabled>Mute microphone</button><button id=cameraButton disabled>Turn camera off</button><button id=hangupButton class=danger disabled>Leave call</button></footer><script>const $ = id => document.getElementById(id);
+    
+    const localVideo = $("localVideo");
+    const remoteVideo = $("remoteVideo");
+    const localPlaceholder = $("localPlaceholder");
+    const remotePlaceholder = $("remotePlaceholder");
+    const localCode = $("localCode");
+    const remoteCode = $("remoteCode");
+    const statusText = $("status");
+    
+    let stream = null;
+    let pc = null;
+    let busy = false;
+    
+    const rtcConfig = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    };
+    
+    function status(message) {
+      statusText.textContent = message;
+    }
+    
+    function refreshButtons() {
+      $("startCamera").disabled = busy || !!stream;
+      $("createOffer").disabled = busy || !stream || !!pc;
+      $("acceptCode").disabled = busy || !stream;
+      $("createAnswer").disabled =
+        busy || !pc || pc.remoteDescription?.type !== "offer";
+      $("copyCode").disabled = !localCode.value;
+      $("micButton").disabled = !stream;
+      $("cameraButton").disabled = !stream;
+      $("hangupButton").disabled = !stream && !pc;
+    }
+    
+    async function run(action) {
+      if (busy) return;
+      busy = true;
+      refreshButtons();
+    
+      try {
+        await action();
+      } catch (error) {
+        console.error(error);
+        status(error.message || "Something went wrong.");
+      } finally {
+        busy = false;
+        refreshButtons();
+      }
+    }
+    
+    async function startCamera() {
+      if (stream) return;
+    
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Camera access requires HTTPS or localhost, and a supported browser.");
+      }
+    
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
+      });
+    
+      localVideo.srcObject = stream;
+      localPlaceholder.hidden = true;
+      status("Camera and microphone ready.");
+    }
+    
+    function createPeer() {
+      if (pc) return pc;
+    
+      pc = new RTCPeerConnection(rtcConfig);
+    
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    
+      pc.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+        remotePlaceholder.hidden = true;
+        remoteVideo.play().catch(() => {});
+      };
+    
+      pc.onconnectionstatechange = () => {
+        status("Connection: " + pc.connectionState);
+      };
+    
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "failed") {
+          status("Connection failed. Your networks may require a TURN server.");
+        }
+      };
+    
+      return pc;
+    }
+    
+    function waitForIce(connection) {
+      return new Promise(resolve => {
+        if (connection.iceGatheringState === "complete") return resolve();
+    
+        const timeout = setTimeout(done, 12000);
+    
+        function done() {
+          clearTimeout(timeout);
+          connection.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        }
+    
+        function check() {
+          if (connection.iceGatheringState === "complete") done();
+        }
+    
+        connection.addEventListener("icegatheringstatechange", check);
+      });
+    }
+    
+    async function createOffer() {
+      await startCamera();
+    
+      const connection = createPeer();
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+    
+      status("Preparing offer code…");
+      await waitForIce(connection);
+    
+      localCode.value = JSON.stringify(connection.localDescription);
+      status("Offer ready. Copy it and send it to the other person.");
+    }
+    
+    async function acceptCode() {
+      await startCamera();
+    
+      let description;
+      try {
+        description = JSON.parse(remoteCode.value.trim());
+      } catch {
+        throw new Error("Paste the complete offer or answer code first.");
+      }
+    
+      if (!description || !["offer", "answer"].includes(description.type) || !description.sdp) {
+        throw new Error("That doesn't look like a valid offer or answer code.");
+      }
+    
+      if (description.type === "offer") {
+        if (pc) pc.close();
+        pc = null;
+        remoteVideo.srcObject = null;
+        remotePlaceholder.hidden = false;
+    
+        const connection = createPeer();
+        await connection.setRemoteDescription(description);
+        status('Offer accepted. Click "Create answer."');      
+      } else {
+        if (!pc) throw new Error("Create your offer before accepting an answer.");
+        if (pc.signalingState !== "have-local-offer") {
+          throw new Error("This answer doesn't match a pending offer.");
+        }
+    
+        await pc.setRemoteDescription(description);
+        status("Answer accepted. Connecting…");
+      }
+    }
+    
+    async function createAnswer() {
+      if (!pc || pc.remoteDescription?.type !== "offer") {
+        throw new Error("Paste and accept the other person's offer first.");
+      }
+    
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+    
+      status("Preparing answer code…");
+      await waitForIce(pc);
+    
+      localCode.value = JSON.stringify(pc.localDescription);
+      status("Answer ready. Copy it and send it to the caller.");
+    }
+    
+    async function copyCode() {
+      if (!localCode.value) throw new Error("Create an offer or answer first.");
+    
+      try {
+        await navigator.clipboard.writeText(localCode.value);
+      } catch {
+        localCode.focus();
+        localCode.select();
+        if (!document.execCommand("copy")) {
+          throw new Error("Copy failed. Select the code and copy it manually.");
+        }
+      }
+    
+      status("Code copied.");
+    }
+    
+    function toggleTrack(kind, button, enabledText, disabledText) {
+      const track = stream?.getTracks().find(item => item.kind === kind);
+      if (!track) return;
+    
+      track.enabled = !track.enabled;
+      button.textContent = track.enabled ? enabledText : disabledText;
+    }
+    
+    function hangUp() {
+      if (pc) {
+        pc.ontrack = null;
+        pc.close();
+        pc = null;
+      }
+    
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+    
+      localVideo.srcObject = null;
+      remoteVideo.srcObject = null;
+      localPlaceholder.hidden = false;
+      remotePlaceholder.hidden = false;
+      localCode.value = "";
+      remoteCode.value = "";
+      $("micButton").textContent = "Mute microphone";
+      $("cameraButton").textContent = "Turn camera off";
+      status("Call ended.");
+      refreshButtons();
+    }
+    
+    $("startCamera").onclick = () => run(startCamera);
+    $("createOffer").onclick = () => run(createOffer);
+    $("acceptCode").onclick = () => run(acceptCode);
+    $("createAnswer").onclick = () => run(createAnswer);
+    $("copyCode").onclick = () => run(copyCode);
+    $("hangupButton").onclick = hangUp;
+    
+    $("micButton").onclick = event =>
+      toggleTrack("audio", event.currentTarget, "Mute microphone", "Unmute microphone");
+    
+    $("cameraButton").onclick = event =>
+      toggleTrack("video", event.currentTarget, "Turn camera off", "Turn camera on");
+    
+    refreshButtons();
+    ``</script>
